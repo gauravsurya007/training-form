@@ -37,7 +37,7 @@ button.ghost{background:transparent;color:var(--accent);border:1px solid var(--a
 <body>
 <main>
 <h1 id="title">Training assessment</h1>
-<p class="muted">Answer the questions, then give feedback on your trainer. Your location is recorded with your answers.</p>
+<p class="muted">Answer the questions, then give feedback on your trainer. Your location and a device ID are recorded with your answers.</p>
 
 <section class="card" id="s-details">
 <h2>Your details</h2>
@@ -47,13 +47,19 @@ button.ghost{background:transparent;color:var(--accent);border:1px solid var(--a
 <input id="name" autocomplete="name">
 <label for="mobile">Mobile number</label>
 <input id="mobile" inputmode="numeric" maxlength="10" autocomplete="tel-national">
-<label for="lms" id="lms-label">LMS ID</label>
-<input id="lms" inputmode="numeric">
-<label for="store">Store name and city</label>
+<div id="f-isd" hidden>
+<label for="tid">T-Retail ID</label>
+<input id="tid" inputmode="numeric">
+</div>
+<div id="f-other" hidden>
+<label for="channel">Channel name</label>
+<select id="channel"></select>
+<label for="store">Store name</label>
 <input id="store">
+</div>
 <label for="trainer">Trainer</label>
 <select id="trainer"></select>
-<div class="loc" id="loc">Getting your location…</div>
+<div class="loc" id="loc" hidden>Getting your location…</div>
 <button type="button" class="ghost" id="retry" hidden>Try location again</button>
 <div class="err" id="err1"></div>
 <button type="button" id="start" disabled>Start assessment</button>
@@ -99,7 +105,8 @@ async function api(body) {
 function show(id) { ['s-details', 's-quiz', 's-fb', 's-done'].forEach((s) => { $(s).hidden = s !== id; }); window.scrollTo(0, 0); }
 
 // ---- location: nothing can start or be submitted without it ----
-function locMsg(text, cls) { $('loc').textContent = text; $('loc').className = 'loc' + (cls ? ' ' + cls : ''); }
+// The box is shown only while location is missing; once a good fix arrives it disappears.
+function locMsg(text, cls) { $('loc').textContent = text; $('loc').className = 'loc' + (cls ? ' ' + cls : ''); $('loc').hidden = cls === 'ok'; }
 function locFail(e) {
   fix = null; $('retry').hidden = false; refresh();
   if (!window.isSecureContext || !navigator.geolocation) return locMsg('This page cannot read location here. Open the link in Chrome or Safari.', 'bad');
@@ -130,16 +137,31 @@ function freshFix() {
 const locOk = () => !!fix && !(cfg && cfg.maxAccuracy > 0 && fix.acc > cfg.maxAccuracy);
 
 // ---- details ----
-function who() { return {type: $('type').value, name: $('name').value.trim(), mobile: $('mobile').value.trim(), lms: $('lms').value.trim(), store: $('store').value.trim(), trainer: $('trainer').value}; }
-function detailsOk() { const w = who(); return w.type && w.name && /^[6-9]\d{9}$/.test(w.mobile) && (w.type !== 'ISD' || w.lms) && w.store && w.trainer; }
-function refresh() { $('start').disabled = busy || !cfg || !detailsOk() || !locOk(); $('lms-label').textContent = $('type').value === 'ISD' ? 'LMS ID' : 'LMS ID (if you have one)'; }
-['type', 'name', 'mobile', 'lms', 'store', 'trainer'].forEach((id) => { $(id).addEventListener('input', refresh); $(id).addEventListener('change', refresh); });
+// One ID per phone and browser, kept on the device, so the same phone used for several trainees can be spotted.
+function deviceId() {
+  try {
+    let d = localStorage.getItem('taf_device');
+    if (!d) { d = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2); localStorage.setItem('taf_device', d); }
+    return d;
+  } catch (e) { return 'no-storage-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+}
+function deviceName() {
+  const u = navigator.userAgent;
+  const os = /Android/.test(u) ? 'Android' : /iPhone|iPad|iPod/.test(u) ? 'iPhone/iPad' : /Windows/.test(u) ? 'Windows' : /Mac OS/.test(u) ? 'Mac' : 'Other';
+  const br = /Edg\//.test(u) ? 'Edge' : /SamsungBrowser/.test(u) ? 'Samsung Internet' : /CriOS|Chrome\//.test(u) ? 'Chrome' : /FxiOS|Firefox\//.test(u) ? 'Firefox' : /Safari\//.test(u) ? 'Safari' : 'Browser';
+  return os + ' \u00b7 ' + br + ' \u00b7 ' + screen.width + 'x' + screen.height;
+}
+const isISD = () => $('type').value === 'ISD';
+function who() { return {type: $('type').value, name: $('name').value.trim(), mobile: $('mobile').value.trim(), tid: $('tid').value.trim(), channel: $('channel').value, store: $('store').value.trim(), trainer: $('trainer').value}; }
+function detailsOk() { const w = who(); return w.type && w.name && /^[6-9]\d{9}$/.test(w.mobile) && (isISD() ? w.tid : (w.channel && w.store)) && w.trainer; }
+function refresh() { $('start').disabled = busy || !cfg || !detailsOk() || !locOk(); $('f-isd').hidden = !isISD(); $('f-other').hidden = !$('type').value || isISD(); }
+['type', 'name', 'mobile', 'tid', 'channel', 'store', 'trainer'].forEach((id) => { $(id).addEventListener('input', refresh); $(id).addEventListener('change', refresh); });
 $('retry').onclick = watchLocation;
 
 $('start').onclick = async () => {
   busy = true; refresh(); $('err1').textContent = '';
   try {
-    attempt = await api({action: 'start', who: who(), loc: fix});
+    attempt = await api({action: 'start', who: who(), loc: fix, device: deviceId(), ua: deviceName()});
     drawQuiz(); drawFeedback(); show('s-quiz');
   } catch (e) { $('err1').textContent = e.message; }
   busy = false; refresh();
@@ -198,6 +220,7 @@ $('submit').onclick = async () => {
     $('title').textContent = cfg.title; document.title = cfg.title;
     $('type').append(new Option('Choose…', ''), ...cfg.types.map((t) => new Option(t)));
     $('trainer').append(new Option('Choose…', ''), ...cfg.trainers.map((t) => new Option(t)));
+    $('channel').append(new Option('Choose…', ''), ...(cfg.channels || []).map((t) => new Option(t)));
     if (fix) onFix({coords: {latitude: fix.lat, longitude: fix.lon, accuracy: fix.acc}});
   } catch (e) { $('err1').textContent = 'Could not load the form. Check your internet connection and reload. (' + e.message + ')'; }
   refresh();
